@@ -357,6 +357,27 @@ service cloud.firestore {
       isValidTime(data.createdAt);
     }
 
+    function isValidCallAudioChunk(data) {
+      return data.keys().hasAll([
+        'callId', 'senderId', 'participantUids', 'seq', 'sampleRate',
+        'predSample', 'stepIndex', 'payload', 'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'callId', 'senderId', 'participantUids', 'seq', 'sampleRate',
+        'predSample', 'stepIndex', 'payload', 'createdAt'
+      ]) &&
+      isValidId(data.callId) &&
+      isValidId(data.senderId) &&
+      data.participantUids is list && data.participantUids.size() == 2 &&
+      data.senderId in data.participantUids &&
+      data.seq is int && data.seq >= 0 &&
+      data.sampleRate is int && data.sampleRate >= 8000 && data.sampleRate <= 48000 &&
+      data.predSample is int && data.predSample >= -32768 && data.predSample <= 32767 &&
+      data.stepIndex is int && data.stepIndex >= 0 && data.stepIndex <= 88 &&
+      data.payload is string && data.payload.size() >= 1 && data.payload.size() <= 16000 &&
+      isValidTime(data.createdAt);
+    }
+
     // 1. Public User Profiles (PII isolated in private subcollection)
     match /users/{userId} {
       allow get, list: if isSignedIn();
@@ -784,6 +805,23 @@ service cloud.firestore {
         allow create: if isSignedIn() &&
           isValidId(candidateId) &&
           isValidCallCandidate(incoming()) &&
+          incoming().callId == callId &&
+          incoming().senderId == request.auth.uid &&
+          (request.auth.uid in incoming().participantUids) &&
+          exists(/databases/$(database)/documents/calls/$(callId)) &&
+          (request.auth.uid in get(/databases/$(database)/documents/calls/$(callId)).data.participantUids);
+
+        allow update: if false;
+        allow delete: if isSignedIn() && (request.auth.uid in existing().participantUids);
+      }
+
+      match /audio_chunks/{chunkId} {
+        allow get: if isSignedIn() && (request.auth.uid in existing().participantUids);
+        allow list: if isSignedIn() && (request.auth.uid in resource.data.participantUids);
+
+        allow create: if isSignedIn() &&
+          isValidId(chunkId) &&
+          isValidCallAudioChunk(incoming()) &&
           incoming().callId == callId &&
           incoming().senderId == request.auth.uid &&
           (request.auth.uid in incoming().participantUids) &&

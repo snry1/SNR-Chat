@@ -4,6 +4,7 @@ import com.example.core.CallStatus
 import com.example.core.OperationType
 import com.example.core.SnrConstants
 import com.example.core.handleFirestoreError
+import com.example.domain.model.CallAudioChunk
 import com.example.domain.model.CallIceCandidate
 import com.example.domain.model.CallSession
 import com.example.domain.model.UserProfile
@@ -179,6 +180,7 @@ class CallRepository(
                     "updatedAt" to now
                 )
             ).await()
+            deleteAllAudioChunks(callId)
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -246,4 +248,91 @@ class CallRepository(
             }
             .collect { emit(it) }
     }.flowOn(Dispatchers.Default)
+
+    suspend fun sendAudioChunk(
+        callId: String,
+        participantUids: List<String>,
+        seq: Long,
+        sampleRate: Int,
+        predSample: Int,
+        stepIndex: Int,
+        payload: String
+    ) {
+        val uid = auth.currentUser?.uid ?: return
+        if (payload.isBlank() || payload.length > 16000) return
+        val chunkId = "a_${uid.take(8)}_$seq"
+        val chunkRef = db.collection(SnrConstants.Collection.CALLS)
+            .document(callId)
+            .collection(SnrConstants.Collection.AUDIO_CHUNKS)
+            .document(chunkId)
+
+        runCatching {
+            chunkRef.set(
+                mapOf(
+                    "callId" to callId,
+                    "senderId" to uid,
+                    "participantUids" to participantUids,
+                    "seq" to seq,
+                    "sampleRate" to sampleRate,
+                    "predSample" to predSample.coerceIn(-32768, 32767),
+                    "stepIndex" to stepIndex.coerceIn(0, 88),
+                    "payload" to payload,
+                    "createdAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        }
+    }
+
+    fun observeRemoteAudioChunks(callId: String, currentUserId: String): Flow<List<CallAudioChunk>> = flow {
+        val uid = requireUserId()
+        check(uid == currentUserId)
+        db.collection(SnrConstants.Collection.CALLS)
+            .document(callId)
+            .collection(SnrConstants.Collection.AUDIO_CHUNKS)
+            .whereArrayContains("participantUids", uid)
+            .snapshots()
+            .map { snap ->
+                snap.toObjects(CallAudioChunk::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                    .filter { it.senderId != uid }
+                    .sortedBy { it.seq }
+            }
+            .catch { error ->
+                val fsError = generateSequence(error) { it.cause }
+                    .filterIsInstance<FirebaseFirestoreException>()
+                    .firstOrNull()
+                if (fsError == null && error is CancellationException) throw error
+                emit(emptyList())
+            }
+            .collect { emit(it) }
+    }.flowOn(Dispatchers.Default)
+
+    suspend fun deleteAudioChunk(callId: String, chunkId: String) {
+        if (auth.currentUser == null) return
+        runCatching {
+            db.collection(SnrConstants.Collection.CALLS)
+                .document(callId)
+                .collection(SnrConstants.Collection.AUDIO_CHUNKS)
+                .document(chunkId)
+                .delete()
+                .await()
+        }
+    }
+
+    suspend fun deleteAllAudioChunks(callId: String) {
+        val uid = auth.currentUser?.uid ?: return
+        runCatching {
+            val snap = db.collection(SnrConstants.Collection.CALLS)
+                .document(callId)
+                .collection(SnrConstants.Collection.AUDIO_CHUNKS)
+                .whereArrayContains("participantUids", uid)
+                .limit(200)
+                .get()
+                .await()
+            if (!snap.isEmpty) {
+                val batch = db.batch()
+                snap.documents.forEach { batch.delete(it.reference) }
+                batch.commit().await()
+            }
+        }
+    }
 }

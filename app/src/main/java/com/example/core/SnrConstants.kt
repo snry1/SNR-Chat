@@ -29,6 +29,7 @@ object SnrConstants {
         const val USER_REPORTS = "user_reports"
         const val CALLS = "calls"
         const val CANDIDATES = "candidates"
+        const val AUDIO_CHUNKS = "audio_chunks"
     }
 }
 

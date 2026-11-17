@@ -10,6 +10,7 @@ import com.example.core.VoicePlayer
 import com.example.core.toFriendlyMessage
 import com.example.data.repository.ChatRepository
 import com.example.data.repository.UserRepository
+import com.example.domain.model.CallIceCandidate
 import com.example.domain.model.CallSession
 import com.example.domain.model.Conversation
 import com.example.domain.model.UserProfile
@@ -52,6 +53,8 @@ class CallController(
 ) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val audioSessionManager = CallAudioSessionManager(appContext)
+    private val voiceRelay = FirestoreVoiceRelay(callRepository)
 
     private val _activeCall = MutableStateFlow<ActiveCallUiState?>(null)
     val activeCall: StateFlow<ActiveCallUiState?> = _activeCall.asStateFlow()
@@ -65,14 +68,18 @@ class CallController(
     private var candidatesJob: Job? = null
     private var timerJob: Job? = null
     private var ringTimeoutJob: Job? = null
+    private var iceFallbackWatchdogJob: Job? = null
 
     private var currentSession: CallSession? = null
     private var engine: WebRtcCallEngine? = null
     private var ringtone: Ringtone? = null
     private var answerAppliedForCallId: String? = null
     private val processedCandidateIds = mutableSetOf<String>()
+    private val queuedRemoteCandidatesBeforeEngine = mutableListOf<CallIceCandidate>()
     private var pendingConversation: Conversation? = null
     private var pendingSender: UserProfile? = null
+    private var webrtcAudioConnected = false
+    private var usingRelayFallback = false
 
     fun startObservingUser(userId: String) {
         if (observedUserId == userId && incomingCallsJob != null) return
@@ -118,7 +125,10 @@ class CallController(
         voicePlayer.stop()
         pendingConversation = conversation
         pendingSender = caller
+        webrtcAudioConnected = false
+        usingRelayFallback = false
 
+        val defaultSpeaker = audioSessionManager.recommendedDefaultSpeaker()
         val tempUi = ActiveCallUiState(
             callId = "pending",
             conversationId = conversation.id,
@@ -127,9 +137,11 @@ class CallController(
             peerAvatarData = callee.avatarData,
             isIncoming = false,
             status = CallStatus.RINGING,
-            statusSubtitle = "Connecting..."
+            statusSubtitle = "Connecting...",
+            isSpeakerOn = defaultSpeaker
         )
         _activeCall.value = tempUi
+        audioSessionManager.start(speakerOn = defaultSpeaker)
 
         scope.launch {
             try {
@@ -152,25 +164,7 @@ class CallController(
                         }
                     },
                     onConnectionStateChanged = { iceState ->
-                        scope.launch {
-                            when (iceState) {
-                                PeerConnection.IceConnectionState.CONNECTED,
-                                PeerConnection.IceConnectionState.COMPLETED -> {
-                                    startElapsedTimerIfNeeded()
-                                    _activeCall.value = _activeCall.value?.copy(
-                                        status = CallStatus.CONNECTED,
-                                        statusSubtitle = TimeFormatters.formatCallDuration(
-                                            _activeCall.value?.elapsedSeconds ?: 0L
-                                        )
-                                    )
-                                }
-                                PeerConnection.IceConnectionState.FAILED -> {
-                                    _callNotice.value = "Voice connection lost."
-                                    hangUp()
-                                }
-                                else -> Unit
-                            }
-                        }
+                        handleIceStateChange(iceState)
                     }
                 )
                 engine = rtcEngine
@@ -188,7 +182,7 @@ class CallController(
                 created.onSuccess { session ->
                     activeCallId = session.id
                     currentSession = session
-                    _activeCall.value = tempUi.copy(
+                    _activeCall.value = _activeCall.value?.copy(
                         callId = session.id,
                         statusSubtitle = "Calling..."
                     )
@@ -219,6 +213,12 @@ class CallController(
         voicePlayer.stop()
         currentSession = session
         answerAppliedForCallId = null
+        webrtcAudioConnected = false
+        usingRelayFallback = false
+        queuedRemoteCandidatesBeforeEngine.clear()
+        processedCandidateIds.clear()
+
+        val defaultSpeaker = audioSessionManager.recommendedDefaultSpeaker()
         _activeCall.value = ActiveCallUiState(
             callId = session.id,
             conversationId = session.conversationId,
@@ -227,7 +227,8 @@ class CallController(
             peerAvatarData = session.callerAvatarData,
             isIncoming = true,
             status = CallStatus.RINGING,
-            statusSubtitle = "Incoming voice call"
+            statusSubtitle = "Incoming voice call",
+            isSpeakerOn = defaultSpeaker
         )
         startRingtone()
         observeCallAndCandidates(session.id, session.calleeId)
@@ -239,9 +240,12 @@ class CallController(
         if (session.statusEnum() != CallStatus.RINGING) return
 
         stopRingtone()
+        val speakerOn = _activeCall.value?.isSpeakerOn ?: audioSessionManager.recommendedDefaultSpeaker()
+        audioSessionManager.start(speakerOn = speakerOn)
+
         _activeCall.value = _activeCall.value?.copy(
             status = CallStatus.CONNECTED,
-            statusSubtitle = "Connecting..."
+            statusSubtitle = "Connecting audio..."
         )
 
         scope.launch {
@@ -260,39 +264,33 @@ class CallController(
                         }
                     },
                     onConnectionStateChanged = { iceState ->
-                        scope.launch {
-                            when (iceState) {
-                                PeerConnection.IceConnectionState.CONNECTED,
-                                PeerConnection.IceConnectionState.COMPLETED -> {
-                                    startElapsedTimerIfNeeded()
-                                }
-                                PeerConnection.IceConnectionState.FAILED -> {
-                                    _callNotice.value = "Voice connection lost."
-                                    hangUp()
-                                }
-                                else -> Unit
-                            }
-                        }
+                        handleIceStateChange(iceState)
                     }
                 )
                 engine = rtcEngine
                 val answerSdp = withContext(Dispatchers.Default) {
                     rtcEngine.initializeSession()
                     rtcEngine.applyRemoteDescription(SessionDescription.Type.OFFER, session.offerSdp)
+                    flushQueuedCandidates(rtcEngine)
                     rtcEngine.createAnswerSdp()
                 }
 
                 callRepository.answerCall(session.id, answerSdp)
                     .onSuccess {
-                        startElapsedTimerIfNeeded()
+                        scheduleIceFallbackWatchdog(session, uid)
                     }
                     .onFailure { err ->
                         _callNotice.value = err.toFriendlyMessage("Failed to answer call.")
                         hangUp()
                     }
             } catch (e: Exception) {
-                _callNotice.value = e.toFriendlyMessage("Unable to connect voice call.")
-                hangUp()
+                // If WebRTC SDP/engine initialization fails, still answer & use Firestore voice relay
+                if (currentSession?.id == session.id) {
+                    activateRelayFallback(session, uid)
+                } else {
+                    _callNotice.value = e.toFriendlyMessage("Unable to connect voice call.")
+                    hangUp()
+                }
             }
         }
     }
@@ -351,14 +349,97 @@ class CallController(
         val current = _activeCall.value ?: return
         val nextMuted = !current.isMuted
         engine?.setMuted(nextMuted)
+        voiceRelay.setMuted(nextMuted)
         _activeCall.value = current.copy(isMuted = nextMuted)
     }
 
     fun toggleSpeaker() {
         val current = _activeCall.value ?: return
         val nextSpeaker = !current.isSpeakerOn
-        engine?.setSpeakerphoneEnabled(nextSpeaker)
+        audioSessionManager.setSpeakerphoneEnabled(nextSpeaker)
         _activeCall.value = current.copy(isSpeakerOn = nextSpeaker)
+    }
+
+    private fun handleIceStateChange(iceState: PeerConnection.IceConnectionState) {
+        scope.launch {
+            when (iceState) {
+                PeerConnection.IceConnectionState.CONNECTED,
+                PeerConnection.IceConnectionState.COMPLETED -> {
+                    if (!usingRelayFallback) {
+                        webrtcAudioConnected = true
+                        iceFallbackWatchdogJob?.cancel()
+                        iceFallbackWatchdogJob = null
+                        val speakerOn = _activeCall.value?.isSpeakerOn
+                            ?: audioSessionManager.recommendedDefaultSpeaker()
+                        audioSessionManager.setSpeakerphoneEnabled(speakerOn)
+                        startElapsedTimerIfNeeded()
+                    }
+                }
+                PeerConnection.IceConnectionState.FAILED,
+                PeerConnection.IceConnectionState.DISCONNECTED -> {
+                    val session = currentSession
+                    val uid = observedUserId
+                    if (!usingRelayFallback && session != null && uid != null &&
+                        session.statusEnum() == CallStatus.CONNECTED
+                    ) {
+                        activateRelayFallback(session, uid)
+                    }
+                }
+                else -> Unit
+            }
+        }
+    }
+
+    private fun scheduleIceFallbackWatchdog(session: CallSession, currentUserId: String) {
+        if (iceFallbackWatchdogJob != null || webrtcAudioConnected || usingRelayFallback) return
+        iceFallbackWatchdogJob = scope.launch {
+            delay(3500L)
+            val latestSession = currentSession
+            if (!webrtcAudioConnected && !usingRelayFallback &&
+                latestSession != null && latestSession.id == session.id &&
+                latestSession.statusEnum() == CallStatus.CONNECTED
+            ) {
+                activateRelayFallback(latestSession, currentUserId)
+            }
+        }
+    }
+
+    private fun activateRelayFallback(session: CallSession, currentUserId: String) {
+        if (usingRelayFallback) return
+        usingRelayFallback = true
+        iceFallbackWatchdogJob?.cancel()
+        iceFallbackWatchdogJob = null
+
+        // Release WebRTC so AudioRecord isn't contended by two engines
+        runCatching { engine?.release() }
+        engine = null
+
+        val ui = _activeCall.value
+        val speakerOn = ui?.isSpeakerOn ?: audioSessionManager.recommendedDefaultSpeaker()
+        val muted = ui?.isMuted ?: false
+        audioSessionManager.start(speakerOn = speakerOn)
+        voiceRelay.start(
+            callId = session.id,
+            currentUserId = currentUserId,
+            participantUids = session.participantUids,
+            initiallyMuted = muted
+        )
+        startElapsedTimerIfNeeded()
+    }
+
+    private fun flushQueuedCandidates(rtcEngine: WebRtcCallEngine) {
+        synchronized(queuedRemoteCandidatesBeforeEngine) {
+            queuedRemoteCandidatesBeforeEngine.forEach { cand ->
+                if (processedCandidateIds.add(cand.id)) {
+                    rtcEngine.addRemoteIceCandidate(
+                        sdpMid = cand.sdpMid,
+                        sdpMLineIndex = cand.sdpMLineIndex,
+                        sdp = cand.sdp
+                    )
+                }
+            }
+            queuedRemoteCandidatesBeforeEngine.clear()
+        }
     }
 
     private fun observeCallAndCandidates(callId: String, currentUserId: String) {
@@ -382,17 +463,37 @@ class CallController(
                                 answerAppliedForCallId != callId
                             ) {
                                 answerAppliedForCallId = callId
-                                runCatching {
-                                    engine?.applyRemoteDescription(
-                                        SessionDescription.Type.ANSWER,
-                                        updated.answerSdp
-                                    )
+                                val speakerOn = _activeCall.value?.isSpeakerOn
+                                    ?: audioSessionManager.recommendedDefaultSpeaker()
+                                audioSessionManager.setSpeakerphoneEnabled(speakerOn)
+                                _activeCall.value = _activeCall.value?.copy(
+                                    status = CallStatus.CONNECTED,
+                                    statusSubtitle = if (webrtcAudioConnected || usingRelayFallback) {
+                                        TimeFormatters.formatCallDuration(_activeCall.value?.elapsedSeconds ?: 0L)
+                                    } else {
+                                        "Connecting audio..."
+                                    }
+                                )
+                                val rtcEngine = engine
+                                if (rtcEngine != null) {
+                                    val sdpResult = runCatching {
+                                        withContext(Dispatchers.Default) {
+                                            rtcEngine.applyRemoteDescription(
+                                                SessionDescription.Type.ANSWER,
+                                                updated.answerSdp
+                                            )
+                                            flushQueuedCandidates(rtcEngine)
+                                        }
+                                    }
+                                    if (sdpResult.isFailure) {
+                                        activateRelayFallback(updated, currentUserId)
+                                    } else {
+                                        scheduleIceFallbackWatchdog(updated, currentUserId)
+                                    }
+                                } else {
+                                    activateRelayFallback(updated, currentUserId)
                                 }
-                                startElapsedTimerIfNeeded()
                             }
-                            _activeCall.value = _activeCall.value?.copy(
-                                status = CallStatus.CONNECTED
-                            )
                         }
                         CallStatus.DECLINED, CallStatus.ENDED, CallStatus.MISSED -> {
                             if (updated.endedBy != currentUserId) {
@@ -414,13 +515,26 @@ class CallController(
             callRepository.observeRemoteCandidates(callId, currentUserId)
                 .catch { /* handled */ }
                 .collect { remoteCandidates ->
-                    remoteCandidates.forEach { cand ->
-                        if (processedCandidateIds.add(cand.id)) {
-                            engine?.addRemoteIceCandidate(
-                                sdpMid = cand.sdpMid,
-                                sdpMLineIndex = cand.sdpMLineIndex,
-                                sdp = cand.sdp
-                            )
+                    val currentEngine = engine
+                    if (currentEngine == null) {
+                        synchronized(queuedRemoteCandidatesBeforeEngine) {
+                            remoteCandidates.forEach { cand ->
+                                if (cand.id !in processedCandidateIds &&
+                                    queuedRemoteCandidatesBeforeEngine.none { it.id == cand.id }
+                                ) {
+                                    queuedRemoteCandidatesBeforeEngine.add(cand)
+                                }
+                            }
+                        }
+                    } else {
+                        remoteCandidates.forEach { cand ->
+                            if (processedCandidateIds.add(cand.id)) {
+                                currentEngine.addRemoteIceCandidate(
+                                    sdpMid = cand.sdpMid,
+                                    sdpMLineIndex = cand.sdpMLineIndex,
+                                    sdp = cand.sdp
+                                )
+                            }
                         }
                     }
                 }
@@ -479,13 +593,22 @@ class CallController(
         timerJob = null
         ringTimeoutJob?.cancel()
         ringTimeoutJob = null
+        iceFallbackWatchdogJob?.cancel()
+        iceFallbackWatchdogJob = null
+        synchronized(queuedRemoteCandidatesBeforeEngine) {
+            queuedRemoteCandidatesBeforeEngine.clear()
+        }
         processedCandidateIds.clear()
         answerAppliedForCallId = null
+        webrtcAudioConnected = false
+        usingRelayFallback = false
         currentSession = null
         pendingConversation = null
         pendingSender = null
+        voiceRelay.stop()
         engine?.release()
         engine = null
+        audioSessionManager.release()
         _activeCall.value = null
     }
 }

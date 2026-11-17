@@ -263,3 +263,19 @@ data class CallIceCandidate(
     @ServerTimestamp val createdAt: Timestamp? = null
 )
 
+@Keep
+@IgnoreExtraProperties
+data class CallAudioChunk(
+    @DocumentId val id: String = "",
+    val callId: String = "",
+    val senderId: String = "",
+    val participantUids: List<String> = emptyList(),
+    val seq: Long = 0L,
+    val sampleRate: Int = 8000,
+    val predSample: Int = 0,
+    val stepIndex: Int = 0,
+    val payload: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null
+)
+
+

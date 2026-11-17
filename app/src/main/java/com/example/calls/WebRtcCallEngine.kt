@@ -1,9 +1,8 @@
 package com.example.calls
 
 import android.content.Context
-import android.media.AudioDeviceInfo
-import android.media.AudioManager
-import android.os.Build
+import android.media.AudioAttributes
+import android.media.MediaRecorder
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
@@ -16,31 +15,30 @@ import org.webrtc.PeerConnectionFactory
 import org.webrtc.RtpReceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
+import org.webrtc.audio.JavaAudioDeviceModule
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 class WebRtcCallEngine(
-    private val context: Context,
+    context: Context,
     private val onLocalIceCandidate: (sdpMid: String, sdpMLineIndex: Int, sdp: String) -> Unit,
     private val onConnectionStateChanged: (PeerConnection.IceConnectionState) -> Unit
 ) {
     private val appContext = context.applicationContext
-    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
+    private var audioDeviceModule: JavaAudioDeviceModule? = null
     private var factory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
     private var audioSource: AudioSource? = null
     private var localAudioTrack: AudioTrack? = null
+    private var remoteAudioTrack: AudioTrack? = null
 
     private var remoteDescriptionApplied = false
     private val pendingRemoteCandidates = mutableListOf<IceCandidate>()
-
-    private var savedAudioMode: Int = audioManager.mode
-    private var savedSpeakerOn: Boolean = false
+    private var isMuted = false
 
     fun initializeSession() {
         release()
-        configureCallAudioMode(speakerOn = false)
 
         if (!factoryInitialized) {
             PeerConnectionFactory.initialize(
@@ -50,16 +48,34 @@ class WebRtcCallEngine(
             factoryInitialized = true
         }
 
-        val pcFactory = PeerConnectionFactory.builder().createPeerConnectionFactory()
+        val voiceAudioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+
+        val adm = JavaAudioDeviceModule.builder(appContext)
+            .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+            .setAudioAttributes(voiceAudioAttributes)
+            .setUseHardwareAcousticEchoCanceler(JavaAudioDeviceModule.isBuiltInAcousticEchoCancelerSupported())
+            .setUseHardwareNoiseSuppressor(JavaAudioDeviceModule.isBuiltInNoiseSuppressorSupported())
+            .createAudioDeviceModule()
+        audioDeviceModule = adm
+
+        val pcFactory = PeerConnectionFactory.builder()
+            .setAudioDeviceModule(adm)
+            .createPeerConnectionFactory()
         factory = pcFactory
 
         val iceServers = listOf(
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
+            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer()
         )
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            iceCandidatePoolSize = 4
         }
 
         val pc = pcFactory.createPeerConnection(
@@ -69,6 +85,16 @@ class WebRtcCallEngine(
 
                 override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                     if (state != null) {
+                        if (state == PeerConnection.IceConnectionState.CONNECTED ||
+                            state == PeerConnection.IceConnectionState.COMPLETED
+                        ) {
+                            runCatching {
+                                peerConnection?.setAudioPlayout(true)
+                                peerConnection?.setAudioRecording(true)
+                                remoteAudioTrack?.setEnabled(true)
+                                remoteAudioTrack?.setVolume(2.0)
+                            }
+                        }
                         onConnectionStateChanged(state)
                     }
                 }
@@ -89,7 +115,15 @@ class WebRtcCallEngine(
 
                 override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
 
-                override fun onAddStream(stream: MediaStream?) {}
+                override fun onAddStream(stream: MediaStream?) {
+                    stream?.audioTracks?.firstOrNull()?.let { track ->
+                        remoteAudioTrack = track
+                        runCatching {
+                            track.setEnabled(true)
+                            track.setVolume(2.0)
+                        }
+                    }
+                }
 
                 override fun onRemoveStream(stream: MediaStream?) {}
 
@@ -98,12 +132,25 @@ class WebRtcCallEngine(
                 override fun onRenegotiationNeeded() {}
 
                 override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
-                    receiver?.track()?.setEnabled(true)
+                    val track = receiver?.track() as? AudioTrack
+                    if (track != null) {
+                        remoteAudioTrack = track
+                        runCatching {
+                            track.setEnabled(true)
+                            track.setVolume(2.0)
+                        }
+                    } else {
+                        receiver?.track()?.setEnabled(true)
+                    }
                 }
             }
         ) ?: error("Unable to create WebRTC PeerConnection.")
 
         peerConnection = pc
+        runCatching {
+            pc.setAudioPlayout(true)
+            pc.setAudioRecording(true)
+        }
 
         val audioConstraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
@@ -113,7 +160,7 @@ class WebRtcCallEngine(
         }
         val source = pcFactory.createAudioSource(audioConstraints)
         val track = pcFactory.createAudioTrack("DAYUNAN_AUDIO_TRACK", source).apply {
-            setEnabled(true)
+            setEnabled(!isMuted)
         }
         audioSource = source
         localAudioTrack = track
@@ -187,8 +234,8 @@ class WebRtcCallEngine(
                 desc
             )
         }
-        remoteDescriptionApplied = true
         synchronized(pendingRemoteCandidates) {
+            remoteDescriptionApplied = true
             pendingRemoteCandidates.forEach { cand ->
                 runCatching { pc.addIceCandidate(cand) }
             }
@@ -199,54 +246,27 @@ class WebRtcCallEngine(
     fun addRemoteIceCandidate(sdpMid: String, sdpMLineIndex: Int, sdp: String) {
         val cand = IceCandidate(sdpMid, sdpMLineIndex, sdp)
         val pc = peerConnection ?: return
-        if (!remoteDescriptionApplied) {
-            synchronized(pendingRemoteCandidates) {
+        synchronized(pendingRemoteCandidates) {
+            if (!remoteDescriptionApplied) {
                 pendingRemoteCandidates.add(cand)
+            } else {
+                runCatching { pc.addIceCandidate(cand) }
             }
-        } else {
-            runCatching { pc.addIceCandidate(cand) }
         }
     }
 
     fun setMuted(muted: Boolean) {
+        isMuted = muted
         localAudioTrack?.setEnabled(!muted)
-    }
-
-    fun setSpeakerphoneEnabled(enabled: Boolean) {
-        runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val targetType = if (enabled) {
-                    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-                } else {
-                    AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
-                }
-                val device = audioManager.availableCommunicationDevices
-                    .firstOrNull { it.type == targetType }
-                if (device != null) {
-                    audioManager.setCommunicationDevice(device)
-                    return
-                }
-            }
-            @Suppress("DEPRECATION")
-            audioManager.isSpeakerphoneOn = enabled
-        }
-    }
-
-    private fun configureCallAudioMode(speakerOn: Boolean) {
-        runCatching {
-            savedAudioMode = audioManager.mode
-            @Suppress("DEPRECATION")
-            savedSpeakerOn = audioManager.isSpeakerphoneOn
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-            setSpeakerphoneEnabled(speakerOn)
-        }
+        runCatching { audioDeviceModule?.setMicrophoneMute(muted) }
     }
 
     fun release() {
-        remoteDescriptionApplied = false
         synchronized(pendingRemoteCandidates) {
+            remoteDescriptionApplied = false
             pendingRemoteCandidates.clear()
         }
+        remoteAudioTrack = null
         runCatching {
             localAudioTrack?.setEnabled(false)
             localAudioTrack?.dispose()
@@ -259,16 +279,8 @@ class WebRtcCallEngine(
         peerConnection = null
         runCatching { factory?.dispose() }
         factory = null
-
-        runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                audioManager.clearCommunicationDevice()
-            } else {
-                @Suppress("DEPRECATION")
-                audioManager.isSpeakerphoneOn = savedSpeakerOn
-            }
-            audioManager.mode = AudioManager.MODE_NORMAL
-        }
+        runCatching { audioDeviceModule?.release() }
+        audioDeviceModule = null
     }
 
     private suspend fun setLocalDescription(pc: PeerConnection, sdp: SessionDescription) {

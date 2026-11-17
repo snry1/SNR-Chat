@@ -843,5 +843,78 @@ test("Remove direct chat, remove contact (friendship), and owner-only remove gro
   await assertSucceeds(aliceDb.collection("groups").doc(groupId).delete());
 });
 
+test("Voice call audio_chunks allow participants and block outsiders", async () => {
+  const ts = new Date(Date.now() - 2000);
+  const callId = "call_audio_test_1";
+  const aliceDb = testEnv.authenticatedContext(ALICE).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB).firestore();
+  const charlieDb = testEnv.authenticatedContext(CHARLIE).firestore();
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("calls").doc(callId).set({
+      callerId: ALICE,
+      callerName: "Alice",
+      callerAvatarData: "",
+      calleeId: BOB,
+      calleeName: "Bob",
+      calleeAvatarData: "",
+      conversationId: `${ALICE}_${BOB}`,
+      participantUids: [ALICE, BOB],
+      status: "CONNECTED",
+      offerSdp: "v=0",
+      answerSdp: "v=0",
+      endedBy: "",
+      createdAt: ts,
+      updatedAt: ts,
+    });
+  });
+
+  const chunkRef = aliceDb.collection("calls").doc(callId).collection("audio_chunks").doc("c0");
+  await assertSucceeds(
+    chunkRef.set({
+      callId,
+      senderId: ALICE,
+      participantUids: [ALICE, BOB],
+      seq: 0,
+      sampleRate: 8000,
+      predSample: 0,
+      stepIndex: 0,
+      payload: "AAAA",
+      createdAt: ts,
+    })
+  );
+
+  // Bob can read and delete consumed audio chunk
+  await assertSucceeds(
+    bobDb
+      .collection("calls")
+      .doc(callId)
+      .collection("audio_chunks")
+      .where("participantUids", "array-contains", BOB)
+      .get()
+  );
+  await assertSucceeds(bobDb.collection("calls").doc(callId).collection("audio_chunks").doc("c0").delete());
+
+  // Outsider Charlie cannot create or read audio chunks
+  await assertFails(
+    charlieDb.collection("calls").doc(callId).collection("audio_chunks").doc("c1").set({
+      callId,
+      senderId: CHARLIE,
+      participantUids: [ALICE, CHARLIE],
+      seq: 0,
+      sampleRate: 8000,
+      predSample: 0,
+      stepIndex: 0,
+      payload: "AAAA",
+      createdAt: ts,
+    })
+  );
+  await assertFails(
+    charlieDb.collection("calls").doc(callId).collection("audio_chunks").doc("c0").get()
+  );
+});
+
+
 
 
