@@ -1,0 +1,6 @@
+{
+  "name": "DayunanChat",
+  "description": "Connect Beyond Distance — Modern real-time personal and group social messaging app built with Jetpack Compose and Firebase.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

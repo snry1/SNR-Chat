@@ -1,0 +1,478 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public discoverable user profile without PII.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "username": { "type": "string" },
+        "displayName": { "type": "string" },
+        "displayNameLower": { "type": "string" },
+        "bio": { "type": "string" },
+        "avatarData": { "type": "string" },
+        "online": { "type": "boolean" },
+        "lastSeenAt": { "type": "string", "format": "date-time" },
+        "friendRequestPolicy": { "type": "string", "enum": ["EVERYONE", "NO_ONE"] },
+        "showOnlineStatus": { "type": "boolean" },
+        "showLastSeen": { "type": "boolean" },
+        "showReadReceipts": { "type": "boolean" },
+        "showMessagePreview": { "type": "boolean" },
+        "notificationsEnabled": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId",
+        "username",
+        "displayName",
+        "displayNameLower",
+        "bio",
+        "avatarData",
+        "online",
+        "friendRequestPolicy",
+        "showOnlineStatus",
+        "showLastSeen",
+        "showReadReceipts",
+        "showMessagePreview",
+        "notificationsEnabled",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PrivateAccount": {
+      "title": "PrivateAccount",
+      "description": "Private user account metadata isolated under users/{userId}/private.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "email": { "type": "string" },
+        "darkModePreference": { "type": "string", "enum": ["SYSTEM", "LIGHT", "DARK"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "email", "darkModePreference", "createdAt", "updatedAt"]
+    },
+    "UsernameClaim": {
+      "title": "UsernameClaim",
+      "description": "Maps unique lowercase username to owner userId.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "createdAt"]
+    },
+    "FriendRequest": {
+      "title": "FriendRequest",
+      "description": "Friend request between two users.",
+      "type": "object",
+      "properties": {
+        "fromUserId": { "type": "string" },
+        "toUserId": { "type": "string" },
+        "fromDisplayName": { "type": "string" },
+        "fromUsername": { "type": "string" },
+        "fromAvatarData": { "type": "string" },
+        "toDisplayName": { "type": "string" },
+        "toUsername": { "type": "string" },
+        "toAvatarData": { "type": "string" },
+        "participantUids": { "type": "array" },
+        "status": { "type": "string", "enum": ["PENDING", "ACCEPTED", "REJECTED"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "fromUserId",
+        "toUserId",
+        "fromDisplayName",
+        "fromUsername",
+        "fromAvatarData",
+        "toDisplayName",
+        "toUsername",
+        "toAvatarData",
+        "participantUids",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Friendship": {
+      "title": "Friendship",
+      "description": "Mutual friendship edge between two users.",
+      "type": "object",
+      "properties": {
+        "userAId": { "type": "string" },
+        "userBId": { "type": "string" },
+        "participantUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userAId", "userBId", "participantUids", "createdAt"]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "Personal or group chat metadata and last message preview.",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["DIRECT", "GROUP"] },
+        "participantUids": { "type": "array" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "avatarData": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "adminUids": { "type": "array" },
+        "lastMessageText": { "type": "string" },
+        "lastMessageType": { "type": "string", "enum": ["TEXT", "IMAGE", "FILE", "AUDIO", "SYSTEM"] },
+        "lastMessageSenderId": { "type": "string" },
+        "lastMessageAt": { "type": "string", "format": "date-time" },
+        "typingUids": { "type": "array" },
+        "unreadCounts": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "type",
+        "participantUids",
+        "title",
+        "description",
+        "avatarData",
+        "ownerId",
+        "adminUids",
+        "lastMessageText",
+        "lastMessageType",
+        "lastMessageSenderId",
+        "typingUids",
+        "unreadCounts",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Real-time chat message in a conversation subcollection.",
+      "type": "object",
+      "properties": {
+        "conversationId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderAvatarData": { "type": "string" },
+        "participantUids": { "type": "array" },
+        "type": { "type": "string", "enum": ["TEXT", "IMAGE", "FILE", "AUDIO", "SYSTEM"] },
+        "text": { "type": "string" },
+        "mediaData": { "type": "string" },
+        "fileName": { "type": "string" },
+        "fileMimeType": { "type": "string" },
+        "fileSizeBytes": { "type": "integer" },
+        "audioDurationMs": { "type": "integer" },
+        "replyToMessageId": { "type": "string" },
+        "replyToSenderName": { "type": "string" },
+        "replyToSnippet": { "type": "string" },
+        "deliveredTo": { "type": "array" },
+        "readBy": { "type": "array" },
+        "deleted": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "conversationId",
+        "senderId",
+        "senderName",
+        "senderAvatarData",
+        "participantUids",
+        "type",
+        "text",
+        "mediaData",
+        "fileName",
+        "fileMimeType",
+        "fileSizeBytes",
+        "replyToMessageId",
+        "replyToSenderName",
+        "replyToSnippet",
+        "deliveredTo",
+        "readBy",
+        "deleted",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Group": {
+      "title": "Group",
+      "description": "Group conversation metadata and role lists.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "avatarData": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "adminUids": { "type": "array" },
+        "memberUids": { "type": "array" },
+        "conversationId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "name",
+        "description",
+        "avatarData",
+        "ownerId",
+        "adminUids",
+        "memberUids",
+        "conversationId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "GroupMember": {
+      "title": "GroupMember",
+      "description": "Group member record with role.",
+      "type": "object",
+      "properties": {
+        "groupId": { "type": "string" },
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "username": { "type": "string" },
+        "avatarData": { "type": "string" },
+        "role": { "type": "string", "enum": ["OWNER", "ADMIN", "MEMBER"] },
+        "memberUids": { "type": "array" },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "groupId",
+        "userId",
+        "displayName",
+        "username",
+        "avatarData",
+        "role",
+        "memberUids",
+        "joinedAt",
+        "updatedAt"
+      ]
+    },
+    "GroupInvitation": {
+      "title": "GroupInvitation",
+      "description": "Pending or resolved invitation to join a group.",
+      "type": "object",
+      "properties": {
+        "groupId": { "type": "string" },
+        "groupName": { "type": "string" },
+        "groupAvatarData": { "type": "string" },
+        "fromUserId": { "type": "string" },
+        "fromDisplayName": { "type": "string" },
+        "toUserId": { "type": "string" },
+        "participantUids": { "type": "array" },
+        "status": { "type": "string", "enum": ["PENDING", "ACCEPTED", "DECLINED"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "groupId",
+        "groupName",
+        "groupAvatarData",
+        "fromUserId",
+        "fromDisplayName",
+        "toUserId",
+        "participantUids",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AppNotification": {
+      "title": "AppNotification",
+      "description": "In-app and push notification log entry.",
+      "type": "object",
+      "properties": {
+        "recipientId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "type": { "type": "string", "enum": ["PERSONAL_MESSAGE", "GROUP_MESSAGE", "FRIEND_REQUEST", "FRIEND_ACCEPTED", "GROUP_INVITE"] },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "targetId": { "type": "string" },
+        "dedupeKey": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "recipientId",
+        "senderId",
+        "senderName",
+        "type",
+        "title",
+        "body",
+        "targetId",
+        "dedupeKey",
+        "read",
+        "createdAt"
+      ]
+    },
+    "UserDevice": {
+      "title": "UserDevice",
+      "description": "Registered Android FCM device token.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "fcmToken": { "type": "string" },
+        "platform": { "type": "string" },
+        "appVersion": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "fcmToken", "platform", "appVersion", "createdAt", "updatedAt"]
+    },
+    "BlockedUser": {
+      "title": "BlockedUser",
+      "description": "Block relationship created by blockerId.",
+      "type": "object",
+      "properties": {
+        "blockerId": { "type": "string" },
+        "blockedId": { "type": "string" },
+        "blockedDisplayName": { "type": "string" },
+        "blockedUsername": { "type": "string" },
+        "blockedAvatarData": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "blockerId",
+        "blockedId",
+        "blockedDisplayName",
+        "blockedUsername",
+        "blockedAvatarData",
+        "createdAt"
+      ]
+    },
+    "UserReport": {
+      "title": "UserReport",
+      "description": "User safety report submitted by reporterId.",
+      "type": "object",
+      "properties": {
+        "reporterId": { "type": "string" },
+        "reportedUserId": { "type": "string" },
+        "reason": { "type": "string" },
+        "details": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reporterId", "reportedUserId", "reason", "details", "createdAt"]
+    },
+    "Call": {
+      "title": "Call",
+      "description": "Real-time WebRTC voice call signaling session between two participants.",
+      "type": "object",
+      "properties": {
+        "callerId": { "type": "string" },
+        "callerName": { "type": "string" },
+        "callerAvatarData": { "type": "string" },
+        "calleeId": { "type": "string" },
+        "calleeName": { "type": "string" },
+        "calleeAvatarData": { "type": "string" },
+        "conversationId": { "type": "string" },
+        "participantUids": { "type": "array" },
+        "status": { "type": "string", "enum": ["RINGING", "CONNECTED", "ENDED", "DECLINED", "MISSED"] },
+        "offerSdp": { "type": "string" },
+        "answerSdp": { "type": "string" },
+        "endedBy": { "type": "string" },
+        "connectedAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "callerId",
+        "callerName",
+        "callerAvatarData",
+        "calleeId",
+        "calleeName",
+        "calleeAvatarData",
+        "conversationId",
+        "participantUids",
+        "status",
+        "offerSdp",
+        "answerSdp",
+        "endedBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CallCandidate": {
+      "title": "CallCandidate",
+      "description": "WebRTC ICE candidate exchanged inside a call subcollection.",
+      "type": "object",
+      "properties": {
+        "callId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "participantUids": { "type": "array" },
+        "sdpMid": { "type": "string" },
+        "sdpMLineIndex": { "type": "integer" },
+        "sdp": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["callId", "senderId", "participantUids", "sdpMid", "sdpMLineIndex", "sdp", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Public discoverable user profile documents"
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/PrivateAccount" },
+      "description": "Private user account info and theme preferences"
+    },
+    "/usernames/{username}": {
+      "schema": { "$ref": "#/entities/UsernameClaim" },
+      "description": "Unique lowercase username registry"
+    },
+    "/friend_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/FriendRequest" },
+      "description": "Friend request documents"
+    },
+    "/friendships/{friendshipId}": {
+      "schema": { "$ref": "#/entities/Friendship" },
+      "description": "Confirmed bidirectional friendships"
+    },
+    "/conversations/{conversationId}": {
+      "schema": { "$ref": "#/entities/Conversation" },
+      "description": "Personal and group conversation headers"
+    },
+    "/conversations/{conversationId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/Message" },
+      "description": "Messages inside a conversation"
+    },
+    "/groups/{groupId}": {
+      "schema": { "$ref": "#/entities/Group" },
+      "description": "Group chat metadata and roles"
+    },
+    "/group_members/{memberDocId}": {
+      "schema": { "$ref": "#/entities/GroupMember" },
+      "description": "Group member records"
+    },
+    "/group_invitations/{inviteId}": {
+      "schema": { "$ref": "#/entities/GroupInvitation" },
+      "description": "Pending and resolved group invitations"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/AppNotification" },
+      "description": "User notifications feed"
+    },
+    "/user_devices/{deviceId}": {
+      "schema": { "$ref": "#/entities/UserDevice" },
+      "description": "FCM push device tokens"
+    },
+    "/blocked_users/{blockId}": {
+      "schema": { "$ref": "#/entities/BlockedUser" },
+      "description": "Blocked user records"
+    },
+    "/user_reports/{reportId}": {
+      "schema": { "$ref": "#/entities/UserReport" },
+      "description": "Abuse and safety reports"
+    },
+    "/calls/{callId}": {
+      "schema": { "$ref": "#/entities/Call" },
+      "description": "WebRTC voice call signaling sessions"
+    },
+    "/calls/{callId}/candidates/{candidateId}": {
+      "schema": { "$ref": "#/entities/CallCandidate" },
+      "description": "WebRTC ICE candidates for active calls"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">DayunanChat</string>
+    <string name="brand_tagline">Connect Beyond Distance</string>
+    <string name="sign_in_with_google">Continue with Google</string>
+    <string name="nav_chats">Chats</string>
+    <string name="nav_contacts">Contacts</string>
+    <string name="nav_groups">Groups</string>
+    <string name="nav_profile">Profile</string>
+</resources>
